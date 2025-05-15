@@ -3,53 +3,59 @@ import argparse
 import tensorflow as tf
 import os
 import cv2
+import numpy as np
+import joblib
+from sklearn.metrics import accuracy_score
+from tensorflow.keras.models import load_model, Model
 
-# Note that you can save models in different formats. Some format needs to save/load model and weight separately.
-# Some saves the whole thing together. So, for your set up you might need to save and load differently.
-
-def load_model_weights(model, weights = None):
-    my_model = tf.keras.models.load_model(model)
-    my_model.summary()
-    return my_model
-
-def get_images_labels(df, classes, img_height, img_width):
-    test_images = None
-    test_labels = None
-    # Write the code as needed for your code
-    # for index, row in df.iterrows():
-    #     label = row['label']
-    #     img = tf.io.read_file(row['image_path'])
-    #     img = decode_img(img, img_height, img_width)
-    return test_images, test_labels
-
-def decode_img(img, img_height, img_width):
-    # Convert the compressed string to a 3D uint8 tensor
+def decode_img(img_path, img_height, img_width):
+    img = tf.io.read_file(img_path)
     img = tf.io.decode_jpeg(img, channels=3)
-    # Resize the image to the desired size
-    return tf.image.resize(img, [img_height, img_width])
+    img = tf.image.resize(img, [img_height, img_width])
+    img = img / 255.0
+    return img.numpy()
 
-if __name__=="__main__":
-    parser = argparse.ArgumentParser(description="Deep Learning Test")
-    parser.add_argument('--model', type=str, default='my_model.h5', help='Saved model')
-    parser.add_argument('--weights', type=str, default=None, help='weight file if needed')
-    parser.add_argument('--test_csv', type=str, default='mushrooms_test.csv', help='CSV file with true labels')
+def get_images_labels(df, class_list, img_height, img_width):
+    images, labels = [], []
+    label_map = {name: idx for idx, name in enumerate(class_list)}
+    for _, row in df.iterrows():
+        label = row['label']
+        img_path = row['image_path']
+        if not os.path.exists(img_path):
+            continue
+        img = decode_img(img_path, img_height, img_width)
+        images.append(img)
+        labels.append(label_map[label])
+    return np.array(images), np.array(labels)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Deep Learning or SVM Test")
+    parser.add_argument('--model_type', type=str, default='cnn', choices=['cnn', 'svm'], help='Model type: cnn or svm')
+    parser.add_argument('--model', type=str, default='model1_softmax_boosted.h5', help='Saved CNN model')
+    parser.add_argument('--svm_model', type=str, default='svm_model.joblib', help='Saved SVM model')
+    parser.add_argument('--test_csv', type=str, default='mushrooms_test.csv', help='CSV file with test images and labels')
+    parser.add_argument('--img_height', type=int, default=160)
+    parser.add_argument('--img_width', type=int, default=160)
 
     args = parser.parse_args()
-    model = args.model
-    weights = args.weights
-    test_csv = args.test_csv
 
-    test_df = pd.read_csv(test_csv)
-    classes = {'Agaricus', 'Amanita', 'Boletus', 'Cortinarius','Entoloma','Hygrocybe',
-				'Lactarius', 'Russula', 'Suillus'}
-    
-    # Rewrite the code to match with your setup
-    # Will be different here if extraction model with SVM is used here.
-    test_images, test_labels = get_images_labels(test_df, classes)
-    
-    my_model = load_model_weights(model)
-  
-    loss, acc = my_model.evaluate(test_images, test_labels, verbose=2)
-    print('Test model, accuracy: {:5.5f}%'.format(100 * acc))
+    test_df = pd.read_csv(args.test_csv)
+    class_list = ['Agaricus', 'Amanita', 'Boletus', 'Cortinarius', 'Entoloma', 'Hygrocybe', 'Lactarius', 'Russula', 'Suillus']
 
-    
+    test_images, test_labels = get_images_labels(test_df, class_list, args.img_height, args.img_width)
+
+    if args.model_type == 'cnn':
+        model = load_model(args.model)
+        loss, acc = model.evaluate(test_images, tf.keras.utils.to_categorical(test_labels), verbose=2)
+        print('Test model accuracy: {:5.2f}%'.format(100 * acc))
+    else:
+        # load CNN model only for feature extraction
+        cnn_model = load_model(args.model)
+        feature_extractor = Model(inputs=cnn_model.input, outputs=cnn_model.get_layer(index=-3).output)
+        features = feature_extractor.predict(test_images)
+
+        # load trained SVM
+        svm_model = joblib.load(args.svm_model)
+        preds = svm_model.predict(features)
+        acc = accuracy_score(test_labels, preds)
+        print("SVM model accuracy: {:5.2f}%".format(100 * acc))
